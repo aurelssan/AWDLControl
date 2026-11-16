@@ -25,10 +25,12 @@ macOS 13.0 or higher.
 
 Once AWDL Control is installed and its helper is registered, it lives in your Mac menu bar.
 
-AWDL Control has 3 modes:
+AWDL Control has 4 modes:
 
 * Game Mode
     - AWDL will be disabled when on WiFi and you are actively playing a game.
+* Transfer Mode
+    - AWDL will be disabled while a large amount of data is moving through the WiFi interface, which covers file transfers to a NAS, cloud storage uploads and downloads, and any other sustained network activity. Local copies (disk to disk, SD card to disk) produce no WiFi traffic and never trigger it. AirDrop keeps working in this mode, because AirDrop traffic travels over AWDL itself rather than over the WiFi interface being measured.
 * AWDL On
     - Allow AWDL connections. This is the stock / out of the box Mac setting.
 * AWDL Off
@@ -54,6 +56,17 @@ click the AWDL Control menu bar item and you will see the normally hidden
 "Hide AWDL Control" menu item. This hides AWDL Control, but leaves it running in whatever
 mode it is in. To bring it back to the menu bar, double click the AWDL Control app
 from the Finder.
+
+### Tune Transfer Mode thresholds
+
+Transfer Mode starts suppressing AWDL once WiFi throughput has stayed above
+2 MB/s for 5 seconds, and restores AWDL once it has stayed below 1 MB/s for
+10 seconds. To use different thresholds, write them in bytes per second and
+relaunch the app:
+
+    defaults write com.jh.AWDLControl TransferStartRate -float 5242880
+    defaults write com.jh.AWDLControl TransferStopRate -float 1048576
+    defaults delete com.jh.AWDLControl TransferStartRate   # back to defaults
 
 ## Feedback
 

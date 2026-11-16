@@ -23,6 +23,7 @@
                 <outlet property="openAtLoginCheckbox" destination="fpJ-tF-pDh" id="YGJ-II-FCS"/>
                 <outlet property="registerButton" destination="iA7-by-miz" id="t3k-13-U5p"/>
                 <outlet property="statusMenu" destination="p1Z-A3-Mol" id="CLp-vU-mUy"/>
+                <outlet property="transferModeMenuItem" destination="tRf-Mo-de1" id="tMo-ut-11a"/>
                 <outlet property="upMenuItem" destination="PVA-63-l6Z" id="xMh-LN-IDy"/>
                 <outlet property="window" destination="QvC-M9-y7g" id="gIp-Ho-8D9"/>
             </connections>
@@ -754,6 +755,12 @@ In order to operate AWDL Control must register a helper.</string>
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <connections>
                         <action selector="goAuto:" target="Voe-Tx-rLC" id="6au-aG-1E2"/>
+                    </connections>
+                </menuItem>
+                <menuItem title="Transfer Mode" secondaryImage="arrow.up.arrow.down.circle" catalog="system" id="tRf-Mo-de1">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <connections>
+                        <action selector="goTransfer:" target="Voe-Tx-rLC" id="tAc-tr-11b"/>
                     </connections>
                 </menuItem>
                 <menuItem title="AWDL On" secondaryImage="wifi" catalog="system" id="PVA-63-l6Z">

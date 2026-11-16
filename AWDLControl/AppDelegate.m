@@ -9,6 +9,7 @@
 
 #import "../Common/HelperProtocol.h"
 #import "Reachability.h"
+#import "TrafficMonitor.h"
 
 #import <os/log.h>
 #import <ServiceManagement/ServiceManagement.h>
@@ -17,14 +18,28 @@
 #define LOG OS_LOG_DEFAULT
 
 typedef NS_ENUM(NSInteger, AWDLMode) {
-    AWDLModeGame,
-    AWDLModeUp,
-    AWDLModeDown,
+    AWDLModeGame = 0,
+    AWDLModeUp = 1,
+    AWDLModeDown = 2,
+    // Appended rather than inserted so the values already persisted in
+    // NSUserDefaults keep pointing at the same mode.
+    AWDLModeTransfer = 3,
 };
 
 NSString *const DefaultsAWDLMode = @"AWDLMode";
 NSString *const DefaultsHideWithoutTerminating = @"HideWithoutTerminating";
 NSString *const DefaultsSendNotifications = @"SendNotifications";
+
+// Transfer Mode thresholds, expressed in bytes per second.
+NSString *const DefaultsTransferStartRate = @"TransferStartRate";
+NSString *const DefaultsTransferStopRate = @"TransferStopRate";
+static const double DefaultTransferStartRate = 2.0 * 1024.0 * 1024.0;
+static const double DefaultTransferStopRate = 1.0 * 1024.0 * 1024.0;
+
+// How long the throughput has to stay above / below the thresholds before
+// AWDL is toggled. Without this the mode would flap on every burst.
+static const NSTimeInterval TransferStartHold = 5.0;
+static const NSTimeInterval TransferStopHold = 10.0;
 
 @interface NSImage (MenuExtras)
 
@@ -43,6 +58,7 @@ NSString *const DefaultsSendNotifications = @"SendNotifications";
 @property (strong) IBOutlet NSMenuItem *activeMenuItem;
 @property (strong) IBOutlet NSMenuItem *activeMenuSeparator;
 @property (strong) IBOutlet NSMenuItem *gameModeMenuItem;
+@property (strong) IBOutlet NSMenuItem *transferModeMenuItem;
 @property (strong) IBOutlet NSMenuItem *downMenuItem;
 @property (strong) IBOutlet NSMenuItem *upMenuItem;
 @property (strong) IBOutlet NSMenuItem *hideMenuItem;
@@ -63,6 +79,12 @@ NSString *const DefaultsSendNotifications = @"SendNotifications";
 
 @property Reachability *reachability;
 @property NSRunningApplication *lastGameApp;
+
+@property (strong) TrafficMonitor *trafficMonitor;
+@property BOOL transferActive;
+@property NSTimeInterval transferHighSince;
+@property NSTimeInterval transferLowSince;
+@property double transferRate;
 
 @end
 
@@ -132,6 +154,10 @@ NSString *const DefaultsSendNotifications = @"SendNotifications";
 
 - (IBAction)goAuto:(id)sender {
     [self setAWDLMode:AWDLModeGame];
+}
+
+- (IBAction)goTransfer:(id)sender {
+    [self setAWDLMode:AWDLModeTransfer];
 }
 
 - (IBAction)goDown:(id)sender {
@@ -247,25 +273,127 @@ NSString *const DefaultsSendNotifications = @"SendNotifications";
     }
 }
 
+// MARK: Transfer Mode
+
+- (double)transferStartRate {
+    NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:DefaultsTransferStartRate];
+    return stored ? stored.doubleValue : DefaultTransferStartRate;
+}
+
+- (double)transferStopRate {
+    NSNumber *stored = [[NSUserDefaults standardUserDefaults] objectForKey:DefaultsTransferStopRate];
+    return stored ? stored.doubleValue : DefaultTransferStopRate;
+}
+
+- (void)beginTransferMonitoring {
+    if (!self.trafficMonitor) {
+        self.trafficMonitor = [TrafficMonitor new];
+        __weak typeof(self) weakSelf = self;
+        self.trafficMonitor.updateHandler = ^(double bytesPerSecond) {
+            [weakSelf updateTransferAWDLModeWithRate:bytesPerSecond];
+        };
+    }
+    self.transferActive = NO;
+    self.transferHighSince = 0;
+    self.transferLowSince = 0;
+    self.transferRate = 0;
+    [self.trafficMonitor start];
+}
+
+- (void)endTransferMonitoring {
+    [self.trafficMonitor stop];
+    self.transferActive = NO;
+    self.transferHighSince = 0;
+    self.transferLowSince = 0;
+    self.transferRate = 0;
+}
+
+/// AWDL only degrades traffic that goes through the Wi-Fi interface, so the
+/// trigger is the Wi-Fi throughput itself rather than a guess about which app
+/// is transferring. Local copies (SSD to SSD, SD card to SSD) never produce
+/// Wi-Fi traffic and therefore never trigger this mode.
+- (void)updateTransferAWDLModeWithRate:(double)rate {
+    if (_awdlMode != AWDLModeTransfer || !self.helperConnection) {
+        return;
+    }
+
+    self.transferRate = rate;
+
+    if (self.reachability.interfaceType != nw_interface_type_wifi) {
+        // Nothing to protect on a wired or offline Mac.
+        self.transferActive = NO;
+        self.transferHighSince = 0;
+        self.transferLowSince = 0;
+        [self setAWDLEnabled:YES];
+        return;
+    }
+
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+
+    if (!self.transferActive) {
+        if (rate >= [self transferStartRate]) {
+            if (self.transferHighSince == 0) {
+                self.transferHighSince = now;
+            }
+            if ((now - self.transferHighSince) >= TransferStartHold) {
+                self.transferActive = YES;
+                self.transferHighSince = 0;
+                self.transferLowSince = 0;
+            }
+        } else {
+            self.transferHighSince = 0;
+        }
+    } else {
+        if (rate <= [self transferStopRate]) {
+            if (self.transferLowSince == 0) {
+                self.transferLowSince = now;
+            }
+            if ((now - self.transferLowSince) >= TransferStopHold) {
+                self.transferActive = NO;
+                self.transferHighSince = 0;
+                self.transferLowSince = 0;
+            }
+        } else {
+            self.transferLowSince = 0;
+        }
+    }
+
+    [self setAWDLEnabled:!self.transferActive];
+}
+
 - (void)setAWDLMode:(AWDLMode)mode {
+    if (mode != AWDLModeTransfer) {
+        [self endTransferMonitoring];
+    }
     _awdlMode = mode;
     [[NSUserDefaults standardUserDefaults] setInteger:_awdlMode forKey:@"AWDLMode"];
     switch (mode) {
         case AWDLModeDown:
             [self setAWDLEnabled:NO];
             _gameModeMenuItem.state = NSControlStateValueOff;
+            _transferModeMenuItem.state = NSControlStateValueOff;
             _downMenuItem.state = NSControlStateValueOn;
             _upMenuItem.state = NSControlStateValueOff;
             break;
         case AWDLModeUp:
             [self setAWDLEnabled:YES];
             _gameModeMenuItem.state = NSControlStateValueOff;
+            _transferModeMenuItem.state = NSControlStateValueOff;
             _downMenuItem.state = NSControlStateValueOff;
             _upMenuItem.state = NSControlStateValueOn;
+            break;
+        case AWDLModeTransfer:
+            _gameModeMenuItem.state = NSControlStateValueOff;
+            _transferModeMenuItem.state = NSControlStateValueOn;
+            _downMenuItem.state = NSControlStateValueOff;
+            _upMenuItem.state = NSControlStateValueOff;
+            [self beginTransferMonitoring];
+            [self updateTransferAWDLModeWithRate:0];
             break;
         case AWDLModeGame:
         default:
             _gameModeMenuItem.state = NSControlStateValueOn;
+            _transferModeMenuItem.state = NSControlStateValueOff;
             _downMenuItem.state = NSControlStateValueOff;
             _upMenuItem.state = NSControlStateValueOff;
             [self updateAutoAWDLMode];
@@ -310,6 +438,19 @@ NSString *const DefaultsSendNotifications = @"SendNotifications";
         } else {
             _activeMenuItem.image = nil;
             _activeMenuItem.title = @"No Active Games";
+        }
+        _activeMenuItem.hidden = NO;
+        _activeMenuSeparator.hidden = NO;
+    } else if (_awdlMode == AWDLModeTransfer) {
+        _activeMenuItem.image = nil;
+        if (self.reachability.interfaceType == nw_interface_type_wired) {
+            _activeMenuItem.title = @"Connected via Ethernet";
+        } else if (self.reachability.interfaceType != nw_interface_type_wifi) {
+            _activeMenuItem.title = @"Not Connected via Wi-Fi";
+        } else if (self.transferActive) {
+            _activeMenuItem.title = [NSString stringWithFormat:@"Transferring at %.1f MB/s", self.transferRate / (1024.0 * 1024.0)];
+        } else {
+            _activeMenuItem.title = @"No Active Transfers";
         }
         _activeMenuItem.hidden = NO;
         _activeMenuSeparator.hidden = NO;
